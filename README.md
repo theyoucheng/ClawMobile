@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="http://clawmobile.ae/">Website</a> ·
+  <a href="https://clawmobile.ae/">Website</a> ·
   <a href="https://arxiv.org/abs/2602.22942">Paper</a> ·
   <a href="installer/INSTALL.md">Install</a> ·
   <a href="installer/FAQ.md">FAQ</a> ·
