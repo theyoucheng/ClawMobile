@@ -2,8 +2,6 @@
   <img src="assets/clawmobile-logo.png" width="240" alt="ClawMobile logo" />
 </p>
 
-<h1 align="center">ClawMobile</h1>
-
 <p align="center">
   <b>OpenClaw on your mobile — an AI agent in your pocket.</b>
 </p>
