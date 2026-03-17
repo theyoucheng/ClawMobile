@@ -31,7 +31,6 @@ import {
   tx_battery_status,
 } from "./backends/termux";
 import { android_shell } from "./tools/shell";
-import { mobile_capabilities } from "./tools/capabilities";
 
 type JsonSchema = Record<string, any>;
 
@@ -58,6 +57,11 @@ function toolDef(
 }
 
 export default function register(api: any) {
+  // Public plugin surface for OpenClaw.
+  // This file is the contract boundary between the OpenClaw runtime and the
+  // mobile runtime implementation below.
+
+  // ---- composite mobile runtime tools ----
   api.registerTool(
     toolDef(
       "android_health",
@@ -74,7 +78,6 @@ export default function register(api: any) {
       {
         type: "object",
         properties: {
-          output: { type: "string" },
           backend: { type: "string", enum: ["auto", "adb", "droidrun"] },
         },
         additionalProperties: false,
@@ -141,7 +144,7 @@ export default function register(api: any) {
     )
   );
 
-  // ---- NEW: a11y-based tools ----
+  // ---- semantic UI tools (DroidRun-backed) ----
   api.registerTool(
     toolDef(
       "android_ui_dump",
@@ -273,7 +276,7 @@ export default function register(api: any) {
     )
   );
 
-  // ---- completion signal (Termux:API) ----
+  // ---- device attention / completion ----
   api.registerTool(
     toolDef(
       "android_signal_complete",
@@ -294,7 +297,7 @@ export default function register(api: any) {
     )
   );
 
-  // ---- adb tools ----
+  // ---- raw adb primitives ----
   api.registerTool(
     toolDef(
       "adb_devices",
@@ -387,7 +390,7 @@ export default function register(api: any) {
     )
   );
 
-  // ---- termux-api tools ----
+  // ---- raw termux primitives ----
   api.registerTool(
     toolDef(
       "tx_notify",
@@ -462,7 +465,7 @@ export default function register(api: any) {
     )
   );
 
-  // ---- fallback shell ----
+  // ---- escape hatches / metadata ----
   api.registerTool(
     toolDef(
       "android_shell",
@@ -478,19 +481,6 @@ export default function register(api: any) {
         additionalProperties: false,
       },
       async (args) => android_shell(args)
-    )
-  );
-
-  api.registerTool(
-    toolDef(
-      "mobile_capabilities",
-      "Return the mobile capability catalog or filter by query.",
-      {
-        type: "object",
-        properties: { query: { type: "string" } },
-        additionalProperties: false,
-      },
-      async (args) => mobile_capabilities(args)
     )
   );
 
