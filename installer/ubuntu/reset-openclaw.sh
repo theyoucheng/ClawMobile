@@ -3,13 +3,13 @@ set -euo pipefail
 
 # reset-openclaw.sh
 #
-# Reset OpenClaw state with different levels, useful for testing memory/workspace seeding.
+# Reset OpenClaw state with different levels, useful for testing workspace seeding.
 #
 # Levels:
 #   soft     Stop gateway only (default)
-#   workspace Clear only workspace content that affects memory/bootstrap (AGENTS/TOOLS/rules/workspace cache)
-#   state    Clear OpenClaw state dir
-#   full     Clear both state dir and workspace
+#   workspace Clear seeded workspace content (AGENTS/TOOLS/skills/cache)
+#   state    Clear OpenClaw state dir and plugin build output
+#   full     Remove global OpenClaw CLI and clear state/workspace
 #
 # Options:
 #   --level <soft|workspace|state|full>
@@ -19,14 +19,17 @@ set -euo pipefail
 #
 # Notes:
 # - "state" is usually ~/.openclaw (config/cache/indexes)
-# - "workspace" is where AGENTS.md/TOOLS.md/rules live (and where you seed files)
-# - For memory injection testing, "workspace" level is usually what you want.
+# - "workspace" is where AGENTS.md/TOOLS.md/skills live (and where you seed files)
+# - For seed testing, "workspace" level is usually what you want.
 
 LEVEL="soft"
 DRY_RUN=0
 
 STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 WORKSPACE_OVERRIDE=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PLUGIN_DIR="${REPO_ROOT}/openclaw-plugin-mobile-ui"
 
 usage() {
   cat <<'USAGE'
@@ -38,13 +41,13 @@ Examples:
   # stop gateway only
   ./reset-openclaw.sh
 
-  # reset injected memory/bootstrap files but keep openclaw config
+  # reset injected workspace seed files but keep openclaw config
   ./reset-openclaw.sh --level workspace
 
   # wipe ~/.openclaw (cache/config/index), but keep workspace content
   ./reset-openclaw.sh --level state
 
-  # wipe everything (nuclear)
+  # remove the global OpenClaw CLI and wipe local state/workspace
   ./reset-openclaw.sh --level full
 USAGE
 }
@@ -113,19 +116,84 @@ log "Level: $LEVEL"
 log "State dir: $STATE_DIR"
 log "Workspace: $WORKSPACE"
 
+reset_plugin_build() {
+  if [ -d "$PLUGIN_DIR/dist" ]; then
+    log "Removing plugin build output at $PLUGIN_DIR/dist ..."
+    run "rm -rf '$PLUGIN_DIR/dist'"
+  else
+    log "Plugin build output already clean."
+  fi
+}
+
+clean_seeded_prompt_file() {
+  local file="$1"
+  local begin_marker="CLAWMOBILE_BEGIN"
+  local end_marker="CLAWMOBILE_END"
+
+  # If dry-run, just report what would happen.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if [ -f "$file" ] && grep -q "$begin_marker" "$file"; then
+      # Verify that an END marker exists after the BEGIN marker.
+      local begin_line end_line
+      begin_line=$(grep -n "$begin_marker" "$file" | head -n1 | cut -d: -f1 || true)
+      end_line=$(grep -n "$end_marker" "$file" | head -n1 | cut -d: -f1 || true)
+      if [ -n "${begin_line:-}" ] && [ -n "${end_line:-}" ] && [ "$end_line" -gt "$begin_line" ]; then
+        echo "[DRY-RUN] Would remove mobile seeded block from '$file'"
+      else
+        echo "[DRY-RUN] Found mobile seeded block marker but missing or misordered end marker in '$file'; would skip cleanup to avoid truncating content"
+      fi
+    else
+      echo "[DRY-RUN] No mobile seeded block found in '$file'; nothing to do"
+    fi
+    return 0
+  fi
+
+  # If the file doesn't exist, nothing to clean.
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+
+  # If there's no seeded block marker, leave the file untouched.
+  if ! grep -q "$begin_marker" "$file"; then
+    return 0
+  fi
+
+  # Ensure there is a matching END marker after the BEGIN marker to avoid truncating content.
+  local begin_line end_line
+  begin_line=$(grep -n "$begin_marker" "$file" | head -n1 | cut -d: -f1 || true)
+  end_line=$(grep -n "$end_marker" "$file" | head -n1 | cut -d: -f1 || true)
+  if [ -z "${end_line:-}" ] || [ -z "${begin_line:-}" ] || [ "$end_line" -le "$begin_line" ]; then
+    echo "WARNING: Skipping mobile seeded block cleanup for '$file' because the end marker is missing or appears before the begin marker." >&2
+    return 0
+  fi
+
+  local tmp="${file}.tmp.reset"
+
+  # Strip lines between the mobile begin and end markers (exclusive).
+  awk -v begin_marker="$begin_marker" -v end_marker="$end_marker" '
+index($0, begin_marker) {inblock=1; next}
+index($0, end_marker) {inblock=0; next}
+!inblock {print}
+' "$file" > "$tmp"
+
+  # If the resulting file is empty or only whitespace, delete the original.
+  if [ ! -s "$tmp" ] || ! grep -q '[^[:space:]]' "$tmp"; then
+    rm -f "$file" "$tmp"
+  else
+    mv "$tmp" "$file"
+  fi
+}
+
 reset_workspace() {
-  # Remove only what affects your injected behavior/tests:
-  # - AGENTS.md / TOOLS.md: bootstrap instructions
-  # - rules/Clawbot-mobile: seeded rules (keep rules/user)
-  # - optional workspace caches/logs you might create
-  log "Resetting workspace (bootstrap + seeded rules) ..."
+  # Remove only files seeded by installer/workspace-seed plus local caches.
+  log "Resetting workspace seed files ..."
 
-  # Bootstrap files
-  run "rm -f '$WORKSPACE/AGENTS.md' '$WORKSPACE/TOOLS.md' '$WORKSPACE/BOOTSTRAP.md' '$WORKSPACE/USER.md' '$WORKSPACE/SOUL.md' 2>/dev/null || true"
+  # Seeded prompt files: remove only mobile seeded blocks.
+  clean_seeded_prompt_file "$WORKSPACE/AGENTS.md"
+  clean_seeded_prompt_file "$WORKSPACE/TOOLS.md"
 
-  # Seeded rules folder (overwriteable). Keep user rules.
-  run "rm -rf '$WORKSPACE/rules/Clawbot-mobile' 2>/dev/null || true"
-  run "mkdir -p '$WORKSPACE/rules/user' 2>/dev/null || true"
+  # Seeded skills copied from installer/workspace-seed/skills.
+  run "rm -rf '$WORKSPACE/skills/clawmobile-capabilities' '$WORKSPACE/skills/clawmobile-policy' 2>/dev/null || true"
 
   # If you keep any project-generated caches in workspace:
   run "rm -rf '$WORKSPACE/.cache' '$WORKSPACE/tmp' '$WORKSPACE/.openclaw-cache' 2>/dev/null || true"
@@ -135,6 +203,7 @@ reset_workspace() {
 
 reset_state() {
   log "Resetting OpenClaw state dir (config/cache/indexes) ..."
+  reset_plugin_build
   # Be careful: this may remove onboard configuration if stored under state dir.
   run "rm -rf '$STATE_DIR' 2>/dev/null || true"
   log "State dir reset complete."
@@ -153,8 +222,10 @@ case "$LEVEL" in
     log "Done (state reset)."
     ;;
   full)
-    run "openclaw uninstall --all --yes --non-interactive || true"
+    log "Removing global openclaw CLI package (lighter full reset) ..."
     run "npm rm -g openclaw || true"
+    reset_workspace
+    reset_state
     log "Done (full reset)."
     ;;
 esac

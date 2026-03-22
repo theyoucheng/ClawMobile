@@ -7,11 +7,10 @@ GATEWAY_BIND="${GATEWAY_BIND:-loopback}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-REPO_RULES="${REPO_ROOT}/memory"
 PLUGIN_DIR="${REPO_ROOT}/openclaw-plugin-mobile-ui"
 
 # ---- choose droidrun provider/model in Termux, then pass to Ubuntu via temp env ----
-TMP_ENV="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/clawbot-env.$$.sh"
+TMP_ENV="${TMPDIR:-/data/data/com.termux/files/usr/tmp}/clawmobile-env.$$.sh"
 trap 'rm -f "$TMP_ENV"' EXIT
 
 DROIDRUN_PROVIDER_CHOSEN="${DROIDRUN_PROVIDER:-}"
@@ -74,10 +73,9 @@ fi
   esac
 } > "$TMP_ENV"
 
-echo "[clawbot] Starting OpenClaw Gateway..."
+echo "[clawmobile] Starting OpenClaw Gateway..."
 proot-distro login "${UBUNTU_DISTRO}" --shared-tmp -- bash -lc 'bash -seuo pipefail' <<EOF
 REPO_ROOT='${REPO_ROOT}'
-REPO_RULES='${REPO_RULES}'
 PLUGIN_DIR='${PLUGIN_DIR}'
 TMP_ENV='${TMP_ENV}'
 
@@ -99,16 +97,23 @@ if [ -f installer/ubuntu/env.sh ]; then
 fi
 
 # ---- activate python virtual environment + pin CLAW_MOBILE_PYTHON ----
-if [ -f "/root/venvs/clawbot/bin/activate" ]; then
+VENV_DIR=""
+if [ -f "/root/venvs/clawmobile/bin/activate" ]; then
+  VENV_DIR="/root/venvs/clawmobile"
+elif [ -f "/root/venvs/clawbot/bin/activate" ]; then
+  VENV_DIR="/root/venvs/clawbot"
+fi
+
+if [ -n "\$VENV_DIR" ]; then
   # shellcheck disable=SC1091
-  source "/root/venvs/clawbot/bin/activate"
-  if [ -x "/root/venvs/clawbot/bin/python3" ]; then
-    export CLAW_MOBILE_PYTHON="/root/venvs/clawbot/bin/python3"
+  source "\$VENV_DIR/bin/activate"
+  if [ -x "\$VENV_DIR/bin/python3" ]; then
+    export CLAW_MOBILE_PYTHON="\$VENV_DIR/bin/python3"
   else
-    export CLAW_MOBILE_PYTHON="/root/venvs/clawbot/bin/python"
+    export CLAW_MOBILE_PYTHON="\$VENV_DIR/bin/python"
   fi
 else
-  echo "[run] WARNING: venv not found at /root/venvs/clawbot; tools may use system python"
+  echo "[run] WARNING: venv not found at /root/venvs/clawmobile or /root/venvs/clawbot; tools may use system python"
 fi
 echo "[run] CLAW_MOBILE_PYTHON=\${CLAW_MOBILE_PYTHON:-}" || true
 
@@ -134,6 +139,7 @@ if command -v adb >/dev/null 2>&1; then
       [ -n "\$PICK" ] || PICK="\${DEVICES[0]}"
       export DROIDRUN_SERIAL="\$PICK"
     fi
+    export ANDROID_SERIAL="\$DROIDRUN_SERIAL"
     echo "[run] adb selected serial: \${DROIDRUN_SERIAL}"
   fi
 else
@@ -142,8 +148,20 @@ fi
 
 # ---- build plugin if needed, then plugins install ----
 if [ -d "\$PLUGIN_DIR" ]; then
-  if [ ! -d "\$PLUGIN_DIR/dist" ] || [ ! -f "\$PLUGIN_DIR/dist/pyexec/android_exec.py" ]; then
-    echo "[run] building plugin (dist or pyexec missing)..."
+  NEED_BUILD=0
+
+  if [ ! -f "\$PLUGIN_DIR/dist/index.js" ] || [ ! -f "\$PLUGIN_DIR/dist/pyexec/android_exec.py" ]; then
+    NEED_BUILD=1
+    echo "[run] building plugin (dist output missing)..."
+  elif [ "\$PLUGIN_DIR/package.json" -nt "\$PLUGIN_DIR/dist/index.js" ] || [ "\$PLUGIN_DIR/tsconfig.json" -nt "\$PLUGIN_DIR/dist/index.js" ]; then
+    NEED_BUILD=1
+    echo "[run] building plugin (package or tsconfig changed)..."
+  elif [ -n "\$(find "\$PLUGIN_DIR/src" "\$PLUGIN_DIR/pyexec" "\$PLUGIN_DIR/scripts" -type f -newer "\$PLUGIN_DIR/dist/index.js" -print -quit 2>/dev/null || true)" ]; then
+    NEED_BUILD=1
+    echo "[run] building plugin (source newer than dist)..."
+  fi
+
+  if [ "\$NEED_BUILD" -eq 1 ]; then
     cd "\$PLUGIN_DIR"
     npm install
     npm run build
@@ -156,7 +174,7 @@ else
   echo "[run] WARNING: plugin dir not found at \$PLUGIN_DIR"
 fi
 
-# ---- workspace seed: inject AGENTS/TOOLS blocks + sync rules ----
+# ---- workspace seed: inject AGENTS/TOOLS blocks + sync skills ----
 WORKSPACE="\$(openclaw config get agents.defaults.workspace 2>/dev/null | tr -d '\"' || true)"
 [ -n "\$WORKSPACE" ] || WORKSPACE="/root/.openclaw/workspace"
 mkdir -p "\$WORKSPACE"
@@ -166,7 +184,7 @@ SEED_DIR="\$REPO_ROOT/installer/workspace-seed"
 append_block_if_missing() {
   local target="\$1"
   local block="\$2"
-  local marker="CLAWBOT_MOBILE_BEGIN"
+  local marker="CLAWMOBILE_BEGIN"
 
   [ -f "\$block" ] || return 0
   touch "\$target"
@@ -183,22 +201,24 @@ append_block_if_missing() {
 
 append_block_if_missing "\$WORKSPACE/AGENTS.md" "\$SEED_DIR/AGENTS.mobile.md"
 append_block_if_missing "\$WORKSPACE/TOOLS.md"  "\$SEED_DIR/TOOLS.mobile.md"
-append_block_if_missing "\$WORKSPACE/CAPABILITIES.md" "\$SEED_DIR/CAPABILITIES.mobile.md"
 
-RULES_SRC="\$SEED_DIR/rules"
-RULES_DST="\$WORKSPACE/rules"
-mkdir -p "\$RULES_DST/user"
+SKILLS_SRC="\$SEED_DIR/skills"
+SKILLS_DST="\$WORKSPACE"
 
-if [ -d "\$RULES_SRC/clawbot-mobile" ]; then
-  mkdir -p "\$RULES_DST/clawbot-mobile"
-  rsync -a --delete "\$RULES_SRC/clawbot-mobile/" "\$RULES_DST/clawbot-mobile/"
-  echo "[run] synced rules -> \$RULES_DST/clawbot-mobile (overwrite)"
+if [ -d "\$SKILLS_SRC" ]; then
+  if ! rsync -a "\$SKILLS_SRC" "\$SKILLS_DST/"; then
+    echo "[run] ERROR: failed to sync skills from \$SKILLS_SRC to \$SKILLS_DST -- gateway will not start" >&2
+    exit 1
+  fi
+  echo "[run] synced skills -> \$SKILLS_DST"
 else
-  echo "[run] WARNING: seed rules not found at \$RULES_SRC/clawbot-mobile"
+  echo "[run] WARNING: seed skills not found at \$SKILLS_SRC/"
 fi
 
-# Add a extra commend for telegram to restore ime, like with 
+# Add an extra command for Telegram to restore the IME (input method editor).
 openclaw config set channels.telegram.customCommands '[{"command":"ime","description":"Restore the keyboard (IME)"}]'
+
+openclaw config set tools.profile full
 
 exec openclaw gateway --bind ${GATEWAY_BIND} --port ${GATEWAY_PORT} --verbose
 EOF
