@@ -17,9 +17,19 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 30_000;
 const DEFAULT_TYPE_TIMEOUT_MS = 30_000;
 
-function runAdb(args: string[], timeoutMs = DEFAULT_TIMEOUT_MS): Promise<AdbResult> {
+function adbCommandArgs(args: string[]) {
+  const serial = process.env.DROIDRUN_SERIAL || process.env.ANDROID_SERIAL || "";
+  return serial ? ["-s", serial, ...args] : args;
+}
+
+function runAdb(
+  args: string[],
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  options?: { useSerial?: boolean }
+): Promise<AdbResult> {
   return new Promise((resolve) => {
-    const p = spawn("adb", args, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const adbArgs = options?.useSerial === false ? args : adbCommandArgs(args);
+    const p = spawn("adb", adbArgs, { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
 
     let stdout = "";
     let stderr = "";
@@ -59,7 +69,7 @@ function encodeInputText(text: string) {
 }
 
 export async function adb_devices() {
-  const res = await runAdb(["devices", "-l"], 10_000);
+  const res = await runAdb(["devices", "-l"], 10_000, { useSerial: false });
   if (!res.ok) return { ...res, devices: [] };
 
   const lines = res.stdout.split(/\r?\n/).filter(Boolean);
@@ -127,7 +137,7 @@ export async function adb_ui_dump_xml(input: { compressed?: boolean }) {
 
 export async function adb_screenshot(input?: { timeoutMs?: number }) {
   return await new Promise((resolve) => {
-    const p = spawn("adb", ["exec-out", "screencap", "-p"], {
+    const p = spawn("adb", adbCommandArgs(["exec-out", "screencap", "-p"]), {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });

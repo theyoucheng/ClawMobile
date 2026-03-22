@@ -1,7 +1,5 @@
 import { appendToolAudit } from "../tools/workspace";
 
-export type CompositeBackend = "auto" | "adb" | "droidrun";
-
 export function runtimeEnvFlags() {
   return {
     DROIDRUN_SERIAL: process.env.DROIDRUN_SERIAL || "",
@@ -51,32 +49,4 @@ export function auditError(tool: string, start: number, error: unknown, extra?: 
     error: String((error as any)?.message || error || "unknown_error"),
     ...(extra || {}),
   });
-}
-
-export async function runWithBackendFallback(args: {
-  backend?: CompositeBackend;
-  adbAction: () => Promise<any>;
-  adbAutoAction?: () => Promise<any>;
-  droidrunAction: () => Promise<any>;
-}) {
-  const backend = args.backend ?? "auto";
-
-  if (backend === "adb") {
-    return { res: await args.adbAction(), resolvedBackend: "adb" as const };
-  }
-
-  if (backend === "droidrun") {
-    return { res: await args.droidrunAction(), resolvedBackend: "droidrun" as const };
-  }
-
-  // In auto mode, prefer a direct ADB attempt over a separate preflight probe.
-  // This removes one extra subprocess from the common success path, but use a
-  // shorter ADB attempt here so fallback stays responsive when ADB is stale,
-  // unauthorized, or unavailable.
-  const adbRes = await (args.adbAutoAction ?? args.adbAction)();
-  if ((adbRes as any)?.ok) {
-    return { res: adbRes, resolvedBackend: "adb" as const };
-  }
-
-  return { res: await args.droidrunAction(), resolvedBackend: "droidrun" as const };
 }
